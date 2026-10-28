@@ -5,11 +5,13 @@ export {
   DEFAULT_CONFIG_PATH,
   LOOPBACK_HOST,
   MAX_REPLICAS,
+  MIN_SCHEDULE_EVERY_MS,
   STATE_DIR,
   canonicalJson,
   computeConfigFingerprint,
   loadConfig,
   parseConfig,
+  parseDuration,
   parseModelSpec,
   type LoadConfigOptions,
 } from "./config.js";

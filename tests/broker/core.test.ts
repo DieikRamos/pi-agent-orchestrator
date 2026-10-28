@@ -263,4 +263,50 @@ describe("BrokerCore", () => {
     expect(restarted.getTask(running.id)?.error).toBe("broker_shutdown");
     await restarted.stop();
   });
+  it("persists schedule state and preserves the next run across restart", async () => {
+    const dir = await tempDir();
+    const loadedConfig = parseConfig({
+      agents: {
+        dev: { description: "Developer", model: "fake/model", replicas: 1 },
+      },
+      schedules: [
+        {
+          id: "regression",
+          role: "dev",
+          every: "15m",
+          prompt: "Review recent changes.",
+        },
+      ],
+    });
+    const make = () =>
+      new BrokerCore({
+        config: loadedConfig,
+        workerFactory: new FakeWorkerFactory({ clock, tools: [] }),
+        stateDir: dir,
+        clock,
+        idGenerator: () => "task-1",
+      });
+
+    const first = make();
+    await first.start();
+    const initial = first.listSchedules()[0]!;
+    expect(initial.nextRunAt).toBe("2026-05-06T07:23:09.000Z");
+    const scheduled = await first.runSchedule("regression");
+    expect(scheduled.status).toBe("queued");
+    expect(first.listSchedules()[0]?.lastTaskId).toBe(scheduled.id);
+    const disabled = await first.setScheduleEnabled("regression", false);
+    expect(disabled.enabled).toBe(false);
+    await first.stop();
+
+    const second = make();
+    await second.start();
+    expect(second.listSchedules()[0]).toMatchObject({
+      id: "regression",
+      enabled: false,
+      nextRunAt: initial.nextRunAt,
+      lastTaskId: scheduled.id,
+    });
+    await second.stop();
+  });
+
 });

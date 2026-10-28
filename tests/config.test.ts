@@ -8,6 +8,7 @@ import {
   computeConfigFingerprint,
   loadConfig,
   parseConfig,
+  parseDuration,
   parseModelSpec,
 } from "../src/config.js";
 
@@ -149,6 +150,102 @@ describe("parseConfig", () => {
       expect(issues.join("\n")).toContain("agents.a.description");
       expect(issues.join("\n")).toContain("agents.a.model");
     }
+  });
+
+
+  it("normalizes recurring schedules and defaults", () => {
+    const { config } = parseConfig({
+      agents: {
+        reviewer: { description: "Review changes", model: "m", replicas: 2 },
+      },
+      schedules: [
+        {
+          id: "regression-review",
+          role: "reviewer",
+          every: "15m",
+          prompt: "Review changes added since the last check.\nReport regressions.",
+          acceptance: "A concise report with file references.",
+        },
+        {
+          id: "nightly-audit",
+          role: "reviewer",
+          title: "Nightly audit",
+          every: "1d",
+          prompt: "Audit the repository.",
+          enabled: false,
+          runOnStart: true,
+          overlap: "queue",
+        },
+      ],
+    });
+
+    expect(config.schedules).toHaveLength(2);
+    expect(config.schedules?.[0]).toMatchObject({
+      id: "regression-review",
+      role: "reviewer",
+      title: "Review changes added since the last check.",
+      every: "15m",
+      everyMs: 900_000,
+      enabled: true,
+      runOnStart: false,
+      overlap: "skip",
+    });
+    expect(config.schedules?.[1]).toMatchObject({
+      id: "nightly-audit",
+      title: "Nightly audit",
+      everyMs: 86_400_000,
+      enabled: false,
+      runOnStart: true,
+      overlap: "queue",
+    });
+  });
+
+  it.each([
+    [
+      {
+        agents: { a: { description: "A", model: "m" } },
+        schedules: [{ id: "s", role: "missing", every: "10m", prompt: "p" }],
+      },
+      /unknown role "missing"/,
+    ],
+    [
+      { agents: { a: { description: "A", model: "m" } }, schedules: [{ id: "s", role: "a", every: "10x", prompt: "p" }] },
+      /invalid duration/,
+    ],
+    [
+      { agents: { a: { description: "A", model: "m" } }, schedules: [{ id: "s", role: "a", every: "500ms", prompt: "p" }] },
+      /at least 1000ms/,
+    ],
+    [
+      {
+        agents: { a: { description: "A", model: "m" } },
+        schedules: [
+          { id: "s", role: "a", every: "10m", prompt: "p" },
+          { id: "s", role: "a", every: "10m", prompt: "q" },
+        ],
+      },
+      /duplicate schedule id/,
+    ],
+    [
+      { agents: { a: { description: "A", model: "m" } }, schedules: [{ id: "s", role: "a", every: "10m" }] },
+      /prompt: required/,
+    ],
+    [
+      { agents: { a: { description: "A", model: "m" } }, schedules: [{ id: "s", role: "a", every: "10m", prompt: "p", overlap: "replace" }] },
+      /overlap: expected/,
+    ],
+  ])("rejects invalid schedule config %#", (raw, message) => {
+    expect(() => parseConfig(raw)).toThrow(ConfigError);
+    expect(() => parseConfig(raw)).toThrow(message as RegExp);
+  });
+
+  it("parses compact durations", () => {
+    expect(parseDuration("250ms")).toBe(250);
+    expect(parseDuration("30s")).toBe(30_000);
+    expect(parseDuration("1.5m")).toBe(90_000);
+    expect(parseDuration("2h")).toBe(7_200_000);
+    expect(parseDuration("1d")).toBe(86_400_000);
+    expect(() => parseDuration("5 minutes")).toThrow(/invalid duration/);
   });
 
   it("fingerprints are independent of YAML key order", () => {

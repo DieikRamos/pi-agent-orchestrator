@@ -27,6 +27,21 @@ const health: HealthView = {
   tasks: { total: 0, queued: 0, running: 0, awaitingReview: 0, closed: 0, failed: 0, cancelled: 0 },
 };
 
+const schedule = {
+  id: "regression",
+  role: "developer",
+  title: "Regression review",
+  prompt: "Review changes",
+  every: "15m",
+  everyMs: 900_000,
+  enabled: true,
+  runOnStart: false,
+  overlap: "skip" as const,
+  nextRunAt: "2026-01-01T00:15:00.000Z",
+  skippedRuns: 0,
+  createdAt: "2026-01-01T00:00:00.000Z",
+};
+
 const agent: AgentView = {
   id: "developer#1",
   role: "developer",
@@ -131,6 +146,9 @@ describe("BrokerClient", () => {
     const server = await startServer((req, res) => {
       if (req.url === "/api/tasks" && req.method === "POST") return json(res, 201, task());
       if (req.url === "/api/agents") return json(res, 200, [agent]);
+      if (req.url === "/api/schedules") return json(res, 200, [schedule]);
+      if (req.url === "/api/schedules/regression/run") return json(res, 201, task("queued"));
+      if (req.url === "/api/schedules/regression/enable") return json(res, 200, { ...schedule, enabled: false });
       if (req.url?.startsWith("/api/tasks?")) return json(res, 200, [task("awaiting_review")]);
       if (req.url === "/api/tasks/t1/review") return json(res, 200, task("closed"));
       if (req.url === "/api/tasks/t1/cancel") return json(res, 200, task("cancelled"));
@@ -144,6 +162,12 @@ describe("BrokerClient", () => {
       client.submit({ title: "Do work", role: "developer", prompt: "Do it", acceptance: "tests" }),
     ).resolves.toMatchObject({ id: "t1" });
     await expect(client.listAgents()).resolves.toHaveLength(1);
+    await expect(client.listSchedules()).resolves.toHaveLength(1);
+    await expect(client.runSchedule("regression")).resolves.toMatchObject({ status: "queued" });
+    await expect(client.setScheduleEnabled("regression", false)).resolves.toMatchObject({
+      id: "regression",
+      enabled: false,
+    });
     await expect(client.listTasks({ role: "developer", status: ["running", "queued"] })).resolves.toHaveLength(1);
     await expect(client.review("t1", "close")).resolves.toMatchObject({ status: "closed" });
     await expect(client.cancel("t1")).resolves.toMatchObject({ status: "cancelled" });

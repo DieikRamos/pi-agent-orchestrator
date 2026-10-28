@@ -8,7 +8,7 @@ import type { TaskStatus } from "../../src/types.js";
 
 const clock = () => new Date("2026-04-05T06:07:08.000Z");
 
-function loaded(replicas = 1) {
+function loaded(replicas = 1, schedules?: unknown[]) {
   return parseConfig({
     agents: {
       dev: {
@@ -17,14 +17,19 @@ function loaded(replicas = 1) {
         replicas,
       },
     },
+    ...(schedules ? { schedules } : {}),
   });
 }
 
-function makeScheduler(replicas = 1, workerOptions: FakeWorkerOptions = {}) {
+function makeScheduler(
+  replicas = 1,
+  workerOptions: FakeWorkerOptions = {},
+  schedules?: unknown[],
+) {
   let nextId = 0;
   const factory = new FakeWorkerFactory({ clock, tools: [], ...workerOptions });
   const events = new EventBus({ clock });
-  const config = loaded(replicas);
+  const config = loaded(replicas, schedules);
   const scheduler = new Scheduler({
     config: config.config,
     configFingerprint: config.configFingerprint,
@@ -201,4 +206,85 @@ describe("Scheduler", () => {
     await scheduler.review("task-3", "close");
     await scheduler.stop();
   });
+  it("creates recurring tasks, skips overlap while locked, and resumes after close", async () => {
+    const { scheduler, factory } = makeScheduler(1, { delays: { run: 5 } }, [
+      {
+        id: "regression",
+        role: "dev",
+        every: "10m",
+        prompt: "Review recent changes for regressions.",
+      },
+    ]);
+    await scheduler.start();
+    expect(scheduler.listSchedules()).toMatchObject([
+      {
+        id: "regression",
+        role: "dev",
+        every: "10m",
+        everyMs: 600_000,
+        nextRunAt: "2026-04-05T06:17:08.000Z",
+      },
+    ]);
+
+    await scheduler.tickSchedules(new Date("2026-04-05T06:17:08.000Z"));
+    const firstId = scheduler.listSchedules()[0]!.lastTaskId!;
+    expect(firstId).toBe("task-1");
+    await scheduler.waitForReview(firstId);
+    expect(scheduler.getTask(firstId)?.status).toBe("awaiting_review");
+    expect(scheduler.listSchedules()[0]).toMatchObject({
+      lastTaskId: firstId,
+      lastTaskStatus: "awaiting_review",
+      nextRunAt: "2026-04-05T06:27:08.000Z",
+    });
+
+    await scheduler.tickSchedules(new Date("2026-04-05T06:27:08.000Z"));
+    expect(scheduler.listTasks()).toHaveLength(1);
+    expect(scheduler.listSchedules()[0]).toMatchObject({
+      skippedRuns: 1,
+      lastSkippedAt: "2026-04-05T06:27:08.000Z",
+    });
+    expect(scheduler.getTask(firstId)?.logs.at(-1)?.text).toContain("Skipped scheduled occurrence");
+
+    await scheduler.review(firstId, "close");
+    await scheduler.tickSchedules(new Date("2026-04-05T06:37:08.000Z"));
+    const secondId = scheduler.listSchedules()[0]!.lastTaskId!;
+    expect(secondId).not.toBe(firstId);
+    expect(scheduler.getTask(secondId)?.status).not.toBe("queued");
+    await scheduler.waitForReview(secondId);
+    await scheduler.review(secondId, "close");
+    await scheduler.stop();
+  });
+
+  it("supports runOnStart, manual runs, and enable/disable", async () => {
+    const { scheduler } = makeScheduler(1, { delays: { run: 5 } }, [
+      {
+        id: "startup-check",
+        role: "dev",
+        every: "1h",
+        prompt: "Check the workspace.",
+        runOnStart: true,
+      },
+    ]);
+    await scheduler.start();
+    expect(scheduler.listSchedules()[0]?.nextRunAt).toBe("2026-04-05T06:07:08.000Z");
+    await scheduler.tickSchedules(new Date("2026-04-05T06:07:08.000Z"));
+    const automatic = scheduler.listSchedules()[0]!.lastTaskId!;
+    await scheduler.waitForReview(automatic);
+
+    const manual = await scheduler.runSchedule("startup-check");
+    expect(manual.id).toBe("task-2");
+    expect(scheduler.listSchedules()[0]?.lastTaskId).toBe(manual.id);
+
+    const disabled = await scheduler.setScheduleEnabled("startup-check", false);
+    expect(disabled.enabled).toBe(false);
+    await scheduler.tickSchedules(new Date("2026-04-05T07:07:08.000Z"));
+    expect(scheduler.listTasks()).toHaveLength(2);
+
+    await scheduler.setScheduleEnabled("startup-check", true);
+    await scheduler.review(automatic, "close");
+    await scheduler.waitForReview(manual.id);
+    await scheduler.review(manual.id, "close");
+    await scheduler.stop();
+  });
+
 });

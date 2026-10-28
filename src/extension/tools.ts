@@ -12,6 +12,7 @@ import type {
   AgentView,
   HealthView,
   ReviewDecision,
+  ScheduleView,
   SubmitTaskInput,
   Task,
   TaskFilter,
@@ -22,6 +23,7 @@ export const TOOL_NAMES = [
   "agent_dispatch",
   "agent_wait",
   "agent_status",
+  "agent_schedule",
   "agent_review",
   "agent_cancel",
 ] as const;
@@ -42,6 +44,9 @@ export interface ToolBrokerClient {
   listAgents(): Promise<AgentView[]>;
   listTasks(filter?: TaskFilter): Promise<TaskView[]>;
   getTask(taskId: string): Promise<TaskView>;
+  listSchedules(): Promise<ScheduleView[]>;
+  runSchedule(scheduleId: string): Promise<Task>;
+  setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView>;
 }
 
 export interface ToolDependencies {
@@ -108,6 +113,15 @@ function agentLine(agent: AgentView): string {
   const action = agent.lastAction ? ` — ${agent.lastAction}` : "";
   const error = agent.error ? ` error=${agent.error}` : "";
   return `${agent.id} [${agent.status}] ${agent.model}${agent.effort ? ` effort=${agent.effort}` : ""}${task}${action}${error}`;
+}
+
+function scheduleLine(schedule: ScheduleView): string {
+  const next = schedule.enabled ? `next=${schedule.nextRunAt}` : "disabled";
+  const last = schedule.lastRunAt ? ` last=${schedule.lastRunAt}` : "";
+  const task = schedule.lastTaskId
+    ? ` task=${schedule.lastTaskId}${schedule.lastTaskStatus ? `[${schedule.lastTaskStatus}]` : ""}`
+    : "";
+  return `${schedule.id} role=${schedule.role} every=${schedule.every} overlap=${schedule.overlap} ${next}${last}${task} — ${schedule.title}`;
 }
 
 function defaultTitle(prompt: string): string {
@@ -290,6 +304,63 @@ export function createToolDefinitions(deps: ToolDependencies) {
     },
   };
 
+  const schedule = {
+    name: "agent_schedule" as const,
+    label: "List or run recurring agent schedules",
+    description:
+      "Inspect or control recurring schedules defined under `schedules` in .pi/agents.yml. Use action=\"list\" to see next/last run and the latest task. Use action=\"run\" with a scheduleId to trigger one occurrence immediately (the task still goes through the normal queue and review lock). Use enable/disable to toggle future occurrences without reloading the config. Disabling a schedule does not cancel its existing task.",
+    parameters: Type.Object({
+      action: Type.Union(
+        [
+          Type.Literal("list"),
+          Type.Literal("run"),
+          Type.Literal("enable"),
+          Type.Literal("disable"),
+        ],
+        { description: "Operation to perform. Defaults to list." },
+      ),
+      scheduleId: Type.Optional(
+        Type.String({ minLength: 1, description: "Schedule id for run/enable/disable." }),
+      ),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: { action?: "list" | "run" | "enable" | "disable"; scheduleId?: string },
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      ctx: { cwd: string },
+    ): Promise<ToolResult> {
+      const action = params.action ?? "list";
+      try {
+        const client = deps.getClient(ctx.cwd);
+        if (action === "list") {
+          const schedules = await client.listSchedules();
+          const lines = [
+            `Schedules: ${schedules.length}`,
+            ...(schedules.length > 0 ? schedules.map((entry) => `- ${scheduleLine(entry)}`) : ["- none"]),
+          ];
+          return textResult(lines.join("\n"), { schedules });
+        }
+        const scheduleId = params.scheduleId?.trim();
+        if (!scheduleId) return errorResult(`agent_schedule ${action} requires scheduleId.`);
+        if (action === "run") {
+          const task = await client.runSchedule(scheduleId);
+          return textResult(
+            `Triggered schedule ${scheduleId}; task ${task.id} [${task.status}] role=${task.role}. Use agent_wait ${task.id} to wait for review.`,
+            { scheduleId, taskId: task.id, task },
+          );
+        }
+        const updated = await client.setScheduleEnabled(scheduleId, action === "enable");
+        return textResult(
+          `Schedule ${updated.id} is now ${updated.enabled ? "enabled" : "disabled"}; next=${updated.nextRunAt}.`,
+          { schedule: updated },
+        );
+      } catch (error) {
+        return errorResult(`agent_schedule failed: ${formatBrokerError(error)}`);
+      }
+    },
+  };
+
   const review = {
     name: "agent_review" as const,
     label: "Review agent result",
@@ -361,7 +432,7 @@ export function createToolDefinitions(deps: ToolDependencies) {
     },
   };
 
-  return [dispatch, wait, status, review, cancel];
+  return [dispatch, wait, status, schedule, review, cancel];
 }
 
 /** Register all orchestrator tools with the Pi extension API. */

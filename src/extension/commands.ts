@@ -126,7 +126,7 @@ function extractConfig(value: unknown): OrchestratorConfig | undefined {
 }
 
 const USAGE =
-  "Usage: /agents [status|dashboard|start|stop|reload|logs] — status is the default.";
+  "Usage: /agents [status|schedules|run <id>|enable <id>|disable <id>|dashboard|start|stop|reload|logs] — status is the default.";
 
 export async function handleAgentsCommand(
   args: string,
@@ -138,6 +138,54 @@ export async function handleAgentsCommand(
 
   try {
     switch (subcommand) {
+      case "schedules": {
+        const client = deps.getClient(ctx.cwd);
+        const schedules = await client.listSchedules();
+        const lines = [
+          `Schedules: ${schedules.length}`,
+          ...(schedules.length > 0
+            ? schedules.map((schedule) => {
+                const state = schedule.enabled ? `next ${schedule.nextRunAt}` : "disabled";
+                const last = schedule.lastRunAt ? ` · last ${schedule.lastRunAt}` : "";
+                const task = schedule.lastTaskId
+                  ? ` · task ${schedule.lastTaskId}${schedule.lastTaskStatus ? ` [${schedule.lastTaskStatus}]` : ""}`
+                  : "";
+                return `  ${schedule.id} · ${schedule.role} · every ${schedule.every} · overlap ${schedule.overlap} · ${state}${last}${task} · ${schedule.title}`;
+              })
+            : ["  none"]),
+        ];
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+      case "run": {
+        const scheduleId = tokens[1];
+        if (!scheduleId) {
+          ctx.ui.notify("Usage: /agents run <schedule-id>", "warning");
+          return;
+        }
+        const client = deps.getClient(ctx.cwd);
+        const task = await client.runSchedule(scheduleId);
+        ctx.ui.notify(
+          `Triggered schedule ${scheduleId}: task ${task.id} [${task.status}] role=${task.role}.`,
+          "info",
+        );
+        return;
+      }
+      case "enable":
+      case "disable": {
+        const scheduleId = tokens[1];
+        if (!scheduleId) {
+          ctx.ui.notify(`Usage: /agents ${subcommand} <schedule-id>`, "warning");
+          return;
+        }
+        const client = deps.getClient(ctx.cwd);
+        const schedule = await client.setScheduleEnabled(scheduleId, subcommand === "enable");
+        ctx.ui.notify(
+          `Schedule ${schedule.id} is now ${schedule.enabled ? "enabled" : "disabled"}; next=${schedule.nextRunAt}.`,
+          "info",
+        );
+        return;
+      }
       case "status": {
         const client = deps.getClient(ctx.cwd);
         const [health, agents, tasks] = await Promise.all([
@@ -217,9 +265,20 @@ export function registerCommands(
   deps: CommandDependencies,
 ): void {
   pi.registerCommand(COMMAND_NAME, {
-    description: "Manage the local agent orchestrator (status, dashboard, start, stop, reload, logs)",
+    description: "Manage the local agent orchestrator (status, schedules, run, enable, disable, dashboard, start, stop, reload, logs)",
     getArgumentCompletions: (prefix: string) => {
-      const options = ["status", "dashboard", "start", "stop", "reload", "logs"];
+      const options = [
+        "status",
+        "schedules",
+        "run",
+        "enable",
+        "disable",
+        "dashboard",
+        "start",
+        "stop",
+        "reload",
+        "logs",
+      ];
       return options
         .filter((option) => option.startsWith(prefix.trim()))
         .map((option) => ({ label: option, value: option }));

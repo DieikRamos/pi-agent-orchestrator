@@ -61,6 +61,22 @@ function stubClient(overrides: Partial<ToolBrokerClient> = {}): ToolBrokerClient
     listAgents: vi.fn(async () => [agent, idleAgent]),
     listTasks: vi.fn(async () => [makeTask()]),
     getTask: vi.fn(async () => makeTask()),
+    listSchedules: vi.fn(async () => []),
+    runSchedule: vi.fn(async () => makeTask({ status: "queued", agentId: undefined })),
+    setScheduleEnabled: vi.fn(async (scheduleId: string, enabled: boolean) => ({
+      id: scheduleId,
+      role: "developer",
+      title: "scheduled check",
+      prompt: "check",
+      every: "15m",
+      everyMs: 900_000,
+      enabled,
+      runOnStart: false,
+      overlap: "skip" as const,
+      nextRunAt: "2026-01-01T00:15:00.000Z",
+      skippedRuns: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })),
     ...overrides,
   };
 }
@@ -196,4 +212,25 @@ describe("agent extension tools", () => {
       signal: controller.signal,
     });
   });
+  it("lists, runs and toggles recurring schedules", async () => {
+    const client = stubClient();
+    const listed = await call(client, "agent_schedule", { action: "list" });
+    expect(listed.isError).toBeUndefined();
+    expect(listed.content[0]?.text).toContain("Schedules: 0");
+
+    const run = await call(client, "agent_schedule", {
+      action: "run",
+      scheduleId: "regression",
+    });
+    expect(run.content[0]?.text).toContain("Triggered schedule regression");
+    expect(client.runSchedule).toHaveBeenCalledWith("regression");
+
+    const disabled = await call(client, "agent_schedule", {
+      action: "disable",
+      scheduleId: "regression",
+    });
+    expect(disabled.content[0]?.text).toContain("is now disabled");
+    expect(client.setScheduleEnabled).toHaveBeenCalledWith("regression", false);
+  });
+
 });

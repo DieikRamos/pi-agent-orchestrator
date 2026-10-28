@@ -112,6 +112,57 @@ describe("broker HTTP API", () => {
     });
   });
 
+  it("lists recurring schedules and supports manual run and enable/disable", async () => {
+    const { base, core } = harness!;
+    core.schedules.push({
+      id: "regression",
+      role: "developer",
+      title: "Regression review",
+      prompt: "Review recent changes.",
+      every: "15m",
+      everyMs: 900_000,
+      enabled: true,
+      runOnStart: false,
+      overlap: "skip",
+      nextRunAt: "2026-01-01T00:15:00.000Z",
+      skippedRuns: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const listed = await fetch(`${base}/api/schedules`);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject([
+      { id: "regression", role: "developer", every: "15m" },
+    ]);
+    const one = await fetch(`${base}/api/schedules/regression`);
+    expect(one.status).toBe(200);
+    expect((await one.json()).id).toBe("regression");
+
+    const run = await fetch(`${base}/api/schedules/regression/run`, { method: "POST" });
+    expect(run.status).toBe(201);
+    const task = await run.json();
+    expect(task).toMatchObject({ role: "developer", title: "Regression review" });
+    expect(core.schedules[0]?.lastTaskId).toBe(task.id);
+
+    const disabled = await fetch(`${base}/api/schedules/regression/enable`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    expect((await disabled.json()).enabled).toBe(false);
+
+    const invalid = await fetch(`${base}/api/schedules/regression/enable`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: "no" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const missing = await fetch(`${base}/api/schedules/nope/run`, { method: "POST" });
+    expect(missing.status).toBe(404);
+  });
+
   it("validates and creates tasks", async () => {
     const { base, core } = harness!;
 

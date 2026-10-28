@@ -11,6 +11,7 @@ import {
   type OrchestratorConfig,
   type OrchestratorDefaults,
   type ParsedModelSpec,
+  type ScheduleConfig,
   type ServerConfig,
 } from "./types.js";
 
@@ -20,7 +21,35 @@ export const DEFAULT_CONFIG_PATH = ".pi/agents.yml";
 export const STATE_DIR = ".pi/agent-orchestrator";
 export const CONFIG_VERSION = 1;
 export const MAX_REPLICAS = 16;
+/** Minimum recurring interval. Prevents accidental tight loops. */
+export const MIN_SCHEDULE_EVERY_MS = 1_000;
 export const LOOPBACK_HOST = "127.0.0.1" as const;
+
+const DURATION_UNITS: Record<string, number> = {
+  ms: 1,
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+};
+
+/**
+ * Parse a compact duration such as `500ms`, `30s`, `15m`, `2h` or `1d`.
+ * Returns milliseconds; throws with an actionable message for invalid input.
+ */
+export function parseDuration(value: string): number {
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$/i.exec(value.trim());
+  if (!match) {
+    throw new Error(`invalid duration "${value}" (expected e.g. "30s", "15m", "2h" or "1d")`);
+  }
+  const amount = Number(match[1]);
+  const unit = match[2]!.toLowerCase();
+  const multiplier = DURATION_UNITS[unit];
+  if (!Number.isFinite(amount) || amount <= 0 || multiplier === undefined) {
+    throw new Error(`invalid duration "${value}"`);
+  }
+  return Math.round(amount * multiplier);
+}
 
 export interface LoadConfigOptions {
   /** Explicit config path. Relative paths resolve against `cwd`. */
@@ -280,12 +309,153 @@ function normalizeAgent(
   return agent;
 }
 
-function normalizeConfig(raw: unknown, issues: string[]): OrchestratorConfig | undefined {
-  if (!isPlainObject(raw)) {
-    issues.push("root: expected a YAML mapping with version, server, defaults and agents");
+function normalizeSchedules(
+  raw: unknown,
+  agents: Record<string, AgentConfig>,
+  issues: string[],
+): ScheduleConfig[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    issues.push("schedules: expected an array of recurring schedule definitions");
     return undefined;
   }
-  checkKeys(raw, ["version", "server", "defaults", "agents"], "root", issues);
+
+  const schedules: ScheduleConfig[] = [];
+  const seenIds = new Set<string>();
+  raw.forEach((entry, index) => {
+    const where = `schedules[${index}]`;
+    if (!isPlainObject(entry)) {
+      issues.push(`${where}: expected an object`);
+      return;
+    }
+    checkKeys(
+      entry,
+      ["id", "role", "title", "prompt", "acceptance", "every", "enabled", "runOnStart", "overlap"],
+      where,
+      issues,
+    );
+
+    const id = isNonEmptyString(entry.id) ? entry.id.trim() : "";
+    if (!id) {
+      issues.push(`${where}.id: required non-empty unique schedule id`);
+    } else if (id.includes(":")) {
+      issues.push(`${where}.id: must not contain ":" (reserved for client request ids)`);
+    } else if (seenIds.has(id)) {
+      issues.push(`${where}.id: duplicate schedule id "${id}"`);
+    } else {
+      seenIds.add(id);
+    }
+
+    const role = isNonEmptyString(entry.role) ? entry.role.trim() : "";
+    if (!role) {
+      issues.push(`${where}.role: required non-empty role name`);
+    } else if (!agents[role]) {
+      const known = Object.keys(agents).sort().join(", ") || "<none>";
+      issues.push(`${where}.role: unknown role "${role}" (known roles: ${known})`);
+    }
+
+    if (!isNonEmptyString(entry.prompt)) {
+      issues.push(`${where}.prompt: required non-empty work instructions`);
+    }
+
+    let every = "";
+    let everyMs = 0;
+    if (!isNonEmptyString(entry.every)) {
+      issues.push(`${where}.every: required interval such as "30s", "15m", "2h" or "1d"`);
+    } else {
+      every = entry.every.trim();
+      try {
+        everyMs = parseDuration(every);
+        if (everyMs < MIN_SCHEDULE_EVERY_MS) {
+          issues.push(
+            `${where}.every: interval must be at least ${MIN_SCHEDULE_EVERY_MS}ms, got "${every}"`,
+          );
+        }
+      } catch (error) {
+        issues.push(`${where}.every: ${(error as Error).message}`);
+      }
+    }
+
+    let title = "";
+    if (entry.title !== undefined) {
+      if (!isNonEmptyString(entry.title)) {
+        issues.push(`${where}.title: expected a non-empty string`);
+      } else {
+        title = entry.title.trim();
+      }
+    } else if (isNonEmptyString(entry.prompt)) {
+      const firstLine = entry.prompt.trim().split(/\r?\n/, 1)[0] ?? "Scheduled check";
+      title = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+    }
+
+    let acceptance: string | undefined;
+    if (entry.acceptance !== undefined) {
+      if (typeof entry.acceptance !== "string") {
+        issues.push(`${where}.acceptance: expected a string`);
+      } else if (entry.acceptance.trim()) {
+        acceptance = entry.acceptance.trim();
+      }
+    }
+
+    let enabled = true;
+    if (entry.enabled !== undefined) {
+      if (typeof entry.enabled !== "boolean") {
+        issues.push(`${where}.enabled: expected a boolean`);
+      } else {
+        enabled = entry.enabled;
+      }
+    }
+
+    let runOnStart = false;
+    if (entry.runOnStart !== undefined) {
+      if (typeof entry.runOnStart !== "boolean") {
+        issues.push(`${where}.runOnStart: expected a boolean`);
+      } else {
+        runOnStart = entry.runOnStart;
+      }
+    }
+
+    let overlap: "skip" | "queue" = "skip";
+    if (entry.overlap !== undefined) {
+      if (entry.overlap !== "skip" && entry.overlap !== "queue") {
+        issues.push(`${where}.overlap: expected "skip" or "queue"`);
+      } else {
+        overlap = entry.overlap;
+      }
+    }
+
+    if (
+      id &&
+      role &&
+      agents[role] &&
+      isNonEmptyString(entry.prompt) &&
+      everyMs >= MIN_SCHEDULE_EVERY_MS
+    ) {
+      const schedule: ScheduleConfig = {
+        id,
+        role,
+        title: title || `${role} scheduled check`,
+        prompt: entry.prompt.trim(),
+        every,
+        everyMs,
+        enabled,
+        runOnStart,
+        overlap,
+      };
+      if (acceptance !== undefined) schedule.acceptance = acceptance;
+      schedules.push(schedule);
+    }
+  });
+
+  return schedules.length > 0 ? schedules : undefined;
+}
+
+function normalizeConfig(raw: unknown, issues: string[]): OrchestratorConfig | undefined {
+  if (!isPlainObject(raw)) {
+    issues.push("root: expected a YAML mapping with version, server, defaults, agents and optional schedules");
+    return undefined;
+  }
+  checkKeys(raw, ["version", "server", "defaults", "agents", "schedules"], "root", issues);
 
   let version = CONFIG_VERSION;
   if (raw.version !== undefined) {
@@ -334,6 +504,9 @@ function normalizeConfig(raw: unknown, issues: string[]): OrchestratorConfig | u
 
   const config: OrchestratorConfig = { version, server, agents };
   if (defaults !== undefined) config.defaults = defaults;
+  const schedules = normalizeSchedules(raw.schedules, agents, issues);
+  if (schedules !== undefined) config.schedules = schedules;
+  if (issues.length > 0) return undefined;
   return config;
 }
 

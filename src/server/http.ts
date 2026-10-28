@@ -321,6 +321,41 @@ class BrokerServer implements BrokerHttpServer {
       return;
     }
 
+    if (pathname === "/api/schedules") {
+      if (method !== "GET") throw methodNotAllowed(method, "GET");
+      sendJson(res, 200, this.core.listSchedules());
+      return;
+    }
+
+    const scheduleMatch = /^\/api\/schedules\/([^/]+)(?:\/(run|enable))?$/.exec(pathname);
+    if (scheduleMatch) {
+      const scheduleId = decodeURIComponent(scheduleMatch[1]!);
+      const action = scheduleMatch[2];
+      if (action === undefined) {
+        if (method !== "GET") throw methodNotAllowed(method, "GET");
+        const schedule = this.core.listSchedules().find((entry) => entry.id === scheduleId);
+        if (!schedule) throw notFound(`schedule "${scheduleId}" was not found`);
+        sendJson(res, 200, schedule);
+        return;
+      }
+      if (action === "run") {
+        if (method !== "POST") throw methodNotAllowed(method, "POST");
+        sendJson(res, 201, await this.core.runSchedule(scheduleId));
+        return;
+      }
+      if (action === "enable") {
+        if (method !== "POST") throw methodNotAllowed(method, "POST");
+        const body = await readJsonObject(req, this.bodyLimit);
+        if (typeof body.enabled !== "boolean") {
+          throw new HttpError(400, "invalid_request", "enabled must be a boolean", {
+            field: "enabled",
+          });
+        }
+        sendJson(res, 200, await this.core.setScheduleEnabled(scheduleId, body.enabled));
+        return;
+      }
+    }
+
     if (pathname === "/api/tasks") {
       if (method === "GET") {
         sendJson(res, 200, this.core.listTasks(parseTaskFilter(url.searchParams)));
@@ -461,6 +496,11 @@ class BrokerServer implements BrokerHttpServer {
     const uptimeMs = Number.isFinite(parsedStart) ? Math.max(0, Date.now() - parsedStart) : 0;
     const taskCount = (statuses: readonly TaskStatus[]): number =>
       snapshot.tasks.filter((task) => statuses.includes(task.status)).length;
+    const schedules = snapshot.schedules ?? [];
+    const enabledSchedules = schedules.filter((schedule) => schedule.enabled);
+    const nextRunAt = enabledSchedules
+      .map((schedule) => schedule.nextRunAt)
+      .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
 
     return {
       ok: true,
@@ -491,6 +531,12 @@ class BrokerServer implements BrokerHttpServer {
         closed: taskCount(["closed"]),
         failed: taskCount(["failed"]),
         cancelled: taskCount(["cancelled"]),
+      },
+      schedules: {
+        total: schedules.length,
+        enabled: enabledSchedules.length,
+        due: enabledSchedules.filter((schedule) => Date.parse(schedule.nextRunAt) <= Date.now()).length,
+        ...(nextRunAt ? { nextRunAt } : {}),
       },
     };
   }
@@ -591,6 +637,22 @@ class BrokerServer implements BrokerHttpServer {
         dashboard: this.dashboardEnabled,
       },
       agents,
+      ...(snapshot.schedules && snapshot.schedules.length > 0
+        ? {
+            schedules: snapshot.schedules.map((schedule) => ({
+              id: schedule.id,
+              role: schedule.role,
+              title: schedule.title,
+              prompt: schedule.prompt,
+              ...(schedule.acceptance !== undefined ? { acceptance: schedule.acceptance } : {}),
+              every: schedule.every,
+              everyMs: schedule.everyMs,
+              enabled: schedule.enabled,
+              runOnStart: schedule.runOnStart,
+              overlap: schedule.overlap,
+            })),
+          }
+        : {}),
     };
   }
 }

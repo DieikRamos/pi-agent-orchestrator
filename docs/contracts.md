@@ -46,6 +46,19 @@ agents:             # required, at least one role
     model: anthropic/claude-sonnet-4-5
     effort: medium
     replicas: 2
+
+schedules:            # optional recurring checks
+  - id: recent-bug-review
+    role: developer
+    title: Recent bug review
+    every: 30m
+    prompt: >-
+      Review recent changes for regressions and newly introduced bugs.
+      Report file:line references; do not modify production code.
+    acceptance: Concise report with concrete findings.
+    enabled: true
+    runOnStart: false
+    overlap: skip
 ```
 
 Rules enforced by `src/config.ts`:
@@ -63,6 +76,12 @@ Rules enforced by `src/config.ts`:
 - `tools` is an array of non-empty tool names; duplicates are removed.
 - Config loading does not resolve model ids to Pi models. Use `ModelResolver` at
   runtime. `parseModelSpec("provider/model")` splits on the first `/` only.
+- `schedules` is optional. `id` is required and unique; `role` must reference an
+  existing agent; `prompt` is required. `every` accepts `ms`, `s`, `m`, `h`, `d`
+  with a 1000 ms minimum and is normalized to `everyMs`.
+- `enabled` defaults to `true`, `runOnStart` to `false`, and `overlap` to
+  `"skip"`. `overlap: "skip"` does not create a new occurrence while the last
+  task from that schedule is non-terminal; `"queue"` creates queued occurrences.
 - `configFingerprint` is the sha256 of canonical JSON (object keys recursively
   sorted) of the normalized config. Reload compares fingerprints.
 
@@ -91,6 +110,19 @@ queued -> assigned -> running -> awaiting_review -> closed
 - `cancelled`: explicitly cancelled before close. Terminal.
 - `rework`: `awaiting_review -> running` with reviewer feedback. This is the
   only non-terminal transition that preserves worker context.
+
+Recurring schedules are not a separate task lifecycle. Each due occurrence calls
+the normal `submit` path and produces a regular task with
+`metadata.scheduleId`, `metadata.scheduledFor` and `metadata.trigger`
+(`scheduled` or `manual`). Generated tasks use `clientRequestId`
+`schedule:<id>:<kind>:<occurrence>` for idempotency. A schedule advances
+`nextRunAt` before dispatching and skips missed slots instead of replaying them.
+
+Schedule runtime state is persisted in `BrokerState.schedules`:
+`id`, `role`, `title`, `prompt`, `every`, `everyMs`, `enabled`, `runOnStart`,
+`overlap`, `nextRunAt`, `lastRunAt?`, `lastSkippedAt?`, `lastTaskId?`,
+`lastTaskStatus?`, `skippedRuns`, `createdAt`. It is exposed as
+`ScheduleView` (`ScheduleRuntime`).
 
 Agent replica statuses: `starting`, `idle`, `busy`, `awaiting_review`,
 `resetting`, `error`, `stopped`. A replica reports `awaiting_review` for the same
@@ -127,6 +159,10 @@ All routes are under the broker origin. JSON in, JSON out. SSE at
 | `GET` | `/api/health` | `HealthView`: broker status, counts, fingerprint, uptime |
 | `GET` | `/api/config` | Normalized config plus fingerprint |
 | `GET` | `/api/agents` | `AgentView[]` (config, status, lock, last action, stats) |
+| `GET` | `/api/schedules` | `ScheduleView[]` |
+| `GET` | `/api/schedules/:id` | One `ScheduleView` |
+| `POST` | `/api/schedules/:id/run` | Trigger one occurrence now -> created `Task` |
+| `POST` | `/api/schedules/:id/enable` | Body `{ enabled: boolean }` -> updated `ScheduleView` |
 | `GET` | `/api/tasks` | `TaskView[]`; optional `?status=&role=&agentId=` |
 | `GET` | `/api/tasks/:id` | One `TaskView` |
 | `GET` | `/api/events` | SSE stream; first event is `snapshot`, then updates |
@@ -168,11 +204,13 @@ Every event is `data: <JSON>\n\n` with:
 {
   seq: number;        // monotonic broker sequence
   at: string;         // ISO timestamp
-  type: "snapshot" | "agent.updated" | "task.updated" | "task.log" | "broker.updated";
+  type: "snapshot" | "agent.updated" | "task.updated" | "task.log"
+      | "schedule.updated" | "broker.updated";
   data: unknown;      // snapshot: BrokerState
                       // agent.updated: { agent: AgentView }
                       // task.updated: { task: TaskView }
                       // task.log:    { taskId, entry: TaskLogEntry }
+                      // schedule.updated: { schedule: ScheduleView }
                       // broker.updated: { health: HealthView }
 }
 ```
@@ -231,6 +269,9 @@ cancel(taskId): Promise<Task>;
 listAgents(): AgentView[];
 listTasks(filter?): TaskView[];
 getTask(taskId): TaskView | undefined;
+listSchedules(): ScheduleView[];
+runSchedule(scheduleId): Promise<Task>;
+setScheduleEnabled(scheduleId, enabled): Promise<ScheduleView>;
 getSnapshot(): BrokerState;
 subscribe(listener): () => void;
 reload(): Promise<OrchestratorConfig>;

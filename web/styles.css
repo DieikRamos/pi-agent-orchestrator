@@ -705,3 +705,61 @@ input[type="text"]:focus {
     grid-template-columns: 1fr;
   }
 }
+
+.schedule-list {
+  display: grid;
+  gap: 10px;
+}
+
+.schedule-card {
+  border: 1px solid var(--border, #2a3140);
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  background: var(--panel-alt, rgba(255, 255, 255, 0.02));
+}
+
+.schedule-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.schedule-id {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.schedule-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 0.78rem;
+  opacity: 0.78;
+}
+
+.schedule-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.schedule-task:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.schedule-actions {
+  justify-content: flex-end;
+}

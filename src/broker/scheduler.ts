@@ -27,6 +27,9 @@ import type {
   WorkerFactory,
   WorkerResult,
   WorkerUsage,
+  ScheduleConfig,
+  ScheduleRuntime,
+  ScheduleView,
 } from "../types.js";
 import type { EventBus } from "./event-bus.js";
 import {
@@ -166,6 +169,16 @@ function usageTotal(current: WorkerUsage | undefined, next: WorkerUsage | undefi
   return merged;
 }
 
+/** Advance a recurring due time past `now` without replaying every missed slot. */
+function advanceAfter(after: Date, everyMs: number, now: Date): Date {
+  let next = after.getTime() + everyMs;
+  if (next <= now.getTime()) {
+    const missed = Math.floor((now.getTime() - next) / everyMs) + 1;
+    next += missed * everyMs;
+  }
+  return new Date(next);
+}
+
 /**
  * Broker scheduler and runner.
  *
@@ -195,6 +208,9 @@ export class Scheduler {
   private tasks: StoredTask[] = [];
   private actions: BrokerAction[] = [];
   private clientRequests = new Map<string, string>();
+  private schedules: ScheduleRuntime[] = [];
+  private scheduleTimer: ReturnType<typeof setTimeout> | undefined;
+  private scheduleTickInFlight = false;
 
   private startedAt = new Date().toISOString();
   private started = false;
@@ -312,14 +328,20 @@ export class Scheduler {
     this.started = true;
     this.starting = false;
 
+    // Preserve dashboard enable/disable across restarts when the config did not
+    // change; a changed YAML config is authoritative.
+    const scheduleMode = recovery.fingerprintMatches === false ? "reload" : "start";
+    this.reconcileSchedules(recovery.state?.schedules ?? [], this.clock(), scheduleMode);
     for (const task of this.tasks) this.emitTask(task);
     await this.persist();
+    this.scheduleNextTick();
     this.scheduleDrain();
   }
 
   async stop(): Promise<void> {
     if (this.stopped || this.stopping) return;
     this.stopping = true;
+    this.clearScheduleTimer();
 
     for (const task of this.tasks) {
       if (task.status !== "assigned" && task.status !== "running") continue;
@@ -614,6 +636,7 @@ export class Scheduler {
 
     this.config = loaded.config;
     this.configFingerprint = loaded.configFingerprint;
+    this.reconcileSchedules(this.schedules, this.clock(), "reload");
     const roles = new Set(Object.keys(this.config.agents));
     for (const task of this.tasks) {
       if (task.status === "queued" && !roles.has(task.role)) {
@@ -645,6 +668,88 @@ export class Scheduler {
     return this.slots.map((slot) => toAgentView(slot.runtime));
   }
 
+  listSchedules(): ScheduleView[] {
+    return this.schedules.map((schedule) => clone(schedule));
+  }
+
+  /** Trigger one occurrence immediately, regardless of `nextRunAt` or enabled. */
+  async runSchedule(scheduleId: string): Promise<Task> {
+    this.assertRunning();
+    const schedule = this.requireSchedule(scheduleId);
+    const task = await this.createScheduledTask(schedule, this.nowIso(), "manual");
+    this.recordAction("schedule.manual", `Schedule "${schedule.id}" triggered manually`, {
+      taskId: task.id,
+    });
+    this.emitSchedule(schedule);
+    await this.persist();
+    return clone(task);
+  }
+
+  async setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView> {
+    this.assertRunning();
+    const schedule = this.requireSchedule(scheduleId);
+    if (schedule.enabled === enabled) return clone(schedule);
+    schedule.enabled = enabled;
+    if (enabled && schedule.runOnStart) {
+      schedule.nextRunAt = this.nowIso();
+    }
+    this.recordAction(
+      enabled ? "schedule.enabled" : "schedule.disabled",
+      `Schedule "${schedule.id}" ${enabled ? "enabled" : "disabled"}`,
+    );
+    this.emitSchedule(schedule);
+    await this.persist();
+    this.scheduleNextTick();
+    return clone(schedule);
+  }
+
+  /**
+   * Evaluate due schedules. Public and clock-driven so tests can advance time
+   * deterministically; the broker also calls this from a timer.
+   */
+  async tickSchedules(now: Date = this.clock()): Promise<void> {
+    if (!this.isStarted || this.scheduleTickInFlight) return;
+    this.scheduleTickInFlight = true;
+    try {
+      let changed = false;
+      for (const schedule of this.schedules) {
+        if (!schedule.enabled) continue;
+        const next = new Date(schedule.nextRunAt);
+        if (!Number.isFinite(next.getTime()) || next.getTime() > now.getTime()) continue;
+
+        const scheduledFor = schedule.nextRunAt;
+        schedule.nextRunAt = advanceAfter(next, schedule.everyMs, now).toISOString();
+        changed = true;
+
+        const previous = schedule.lastTaskId
+          ? this.tasks.find((task) => task.id === schedule.lastTaskId)
+          : undefined;
+        if (schedule.overlap === "skip" && previous && !isTerminalTaskStatus(previous.status)) {
+          schedule.skippedRuns += 1;
+          schedule.lastSkippedAt = scheduledFor;
+          this.pushLog(previous, {
+            at: this.nowIso(),
+            type: "status",
+            text: `Skipped scheduled occurrence ${scheduledFor}: previous task is still ${previous.status}.`,
+          });
+          this.recordAction(
+            "schedule.skipped",
+            `Schedule "${schedule.id}" skipped ${scheduledFor}: previous task still ${previous.status}`,
+            { taskId: previous.id },
+          );
+          this.emitSchedule(schedule);
+          continue;
+        }
+
+        await this.createScheduledTask(schedule, scheduledFor, "scheduled");
+      }
+      if (changed) await this.persist();
+    } finally {
+      this.scheduleTickInFlight = false;
+      this.scheduleNextTick();
+    }
+  }
+
   listTasks(filter: TaskFilter = {}): TaskView[] {
     return this.tasks.filter((task) => taskMatchesFilter(task, filter)).map((task) => clone(task));
   }
@@ -672,6 +777,7 @@ export class Scheduler {
       configFingerprint: this.configFingerprint,
       agents: this.slots.map((slot) => clone(slot.runtime)),
       tasks: this.tasks.map((task) => clone(task)),
+      schedules: this.schedules.map((schedule) => clone(schedule)),
       seq: this.events?.seq ?? 0,
       startedAt: this.startedAt,
     };
@@ -1239,8 +1345,158 @@ export class Scheduler {
   }
 
   private emitTask(task: StoredTask): void {
+    this.syncScheduleTask(task);
     this.events?.emit("task.updated", { task: clone(task) });
     void this.persist().catch(() => undefined);
+  }
+
+  private emitSchedule(schedule: ScheduleRuntime): void {
+    this.events?.emit("schedule.updated", { schedule: clone(schedule) });
+  }
+
+  private syncScheduleTask(task: StoredTask): void {
+    for (const schedule of this.schedules) {
+      if (schedule.lastTaskId !== task.id) continue;
+      if (schedule.lastTaskStatus === task.status) continue;
+      schedule.lastTaskStatus = task.status;
+      this.emitSchedule(schedule);
+    }
+  }
+
+  private requireSchedule(scheduleId: string): ScheduleRuntime {
+    const schedule = this.schedules.find((candidate) => candidate.id === scheduleId);
+    if (!schedule) {
+      throw new BrokerError("not_found", `schedule ${scheduleId} was not found`, { scheduleId });
+    }
+    return schedule;
+  }
+
+  private async createScheduledTask(
+    schedule: ScheduleRuntime,
+    scheduledFor: string,
+    kind: "scheduled" | "manual",
+  ): Promise<StoredTask> {
+    const existing = schedule.lastTaskId
+      ? this.tasks.find((task) => task.id === schedule.lastTaskId)
+      : undefined;
+    if (kind === "scheduled" && schedule.overlap === "skip" && existing && !isTerminalTaskStatus(existing.status)) {
+      return existing;
+    }
+
+    const task = (await this.submit({
+      role: schedule.role,
+      title: schedule.title,
+      prompt: schedule.prompt,
+      ...(schedule.acceptance !== undefined ? { acceptance: schedule.acceptance } : {}),
+      clientRequestId: `schedule:${schedule.id}:${kind}:${scheduledFor}`,
+      metadata: { scheduleId: schedule.id, scheduledFor, trigger: kind },
+    })) as StoredTask;
+
+    schedule.lastRunAt = scheduledFor;
+    schedule.lastTaskId = task.id;
+    schedule.lastTaskStatus = task.status;
+    this.recordAction("schedule.triggered", `Schedule "${schedule.id}" created task "${task.title}"`, {
+      taskId: task.id,
+    });
+    this.pushLog(task, {
+      at: this.nowIso(),
+      type: "status",
+      text: `Created by schedule "${schedule.id}" (${kind}, occurrence ${scheduledFor}).`,
+      status: task.status,
+    });
+    this.emitSchedule(schedule);
+    return task;
+  }
+
+  private reconcileSchedules(
+    persisted: ScheduleRuntime[],
+    now: Date,
+    mode: "start" | "reload",
+  ): void {
+    const previous = new Map(persisted.map((schedule) => [schedule.id, schedule]));
+    const configured = this.config.schedules ?? [];
+    const next: ScheduleRuntime[] = [];
+    for (const config of configured) {
+      const old = previous.get(config.id);
+      const runtime = this.createScheduleRuntime(config, old, now, mode);
+      next.push(runtime);
+      this.emitSchedule(runtime);
+    }
+    this.schedules = next;
+    this.clearScheduleTimer();
+  }
+
+  private createScheduleRuntime(
+    config: ScheduleConfig,
+    previous: ScheduleRuntime | undefined,
+    now: Date,
+    mode: "start" | "reload",
+  ): ScheduleRuntime {
+    // Runtime enable/disable survives a broker restart, but an explicit
+    // /agents reload applies the YAML value again.
+    const enabled =
+      mode === "start" && previous !== undefined ? previous.enabled : config.enabled;
+    const runtime: ScheduleRuntime = {
+      id: config.id,
+      role: config.role,
+      title: config.title,
+      prompt: config.prompt,
+      every: config.every,
+      everyMs: config.everyMs,
+      enabled,
+      runOnStart: config.runOnStart,
+      overlap: config.overlap,
+      nextRunAt: new Date(now.getTime() + config.everyMs).toISOString(),
+      skippedRuns: 0,
+      createdAt: now.toISOString(),
+    };
+    if (config.acceptance !== undefined) runtime.acceptance = config.acceptance;
+    if (!previous) {
+      if (config.enabled && config.runOnStart) runtime.nextRunAt = now.toISOString();
+      return runtime;
+    }
+
+    runtime.createdAt = previous.createdAt;
+    runtime.lastRunAt = previous.lastRunAt;
+    runtime.lastSkippedAt = previous.lastSkippedAt;
+    runtime.lastTaskId = previous.lastTaskId;
+    runtime.lastTaskStatus = previous.lastTaskStatus;
+    runtime.skippedRuns = previous.skippedRuns ?? 0;
+
+    const persistedNext = Date.parse(previous.nextRunAt);
+    const intervalChanged = previous.everyMs !== config.everyMs;
+    const reEnabled = config.enabled && !previous.enabled;
+    if (!intervalChanged && !reEnabled && Number.isFinite(persistedNext)) {
+      runtime.nextRunAt = previous.nextRunAt;
+    } else {
+      const anchor = runtime.lastRunAt ? Date.parse(runtime.lastRunAt) : now.getTime();
+      runtime.nextRunAt = new Date(anchor + config.everyMs).toISOString();
+      if (reEnabled && config.runOnStart) runtime.nextRunAt = now.toISOString();
+    }
+    return runtime;
+  }
+
+  private clearScheduleTimer(): void {
+    if (this.scheduleTimer !== undefined) {
+      clearTimeout(this.scheduleTimer);
+      this.scheduleTimer = undefined;
+    }
+  }
+
+  private scheduleNextTick(): void {
+    if (this.stopping || this.stopped || !this.started) return;
+    this.clearScheduleTimer();
+    const due = this.schedules
+      .filter((schedule) => schedule.enabled)
+      .map((schedule) => Date.parse(schedule.nextRunAt))
+      .filter((value) => Number.isFinite(value));
+    if (due.length === 0) return;
+    const delay = Math.max(0, Math.min(...due) - this.clock().getTime());
+    this.scheduleTimer = setTimeout(() => {
+      this.scheduleTimer = undefined;
+      void this.tickSchedules();
+    }, Math.min(delay, 2_147_483_647));
+    this.scheduleTimer.unref?.();
   }
 
   private persist(): Promise<void> {

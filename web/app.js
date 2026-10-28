@@ -14,6 +14,7 @@ const state = {
   config: null,
   agents: [],
   tasks: [],
+  schedules: [],
   selectedTaskId: null,
   lastSeq: 0,
   sseState: "connecting",
@@ -25,6 +26,8 @@ const state = {
   reviewDraft: "",
   submittingReview: false,
   cancellingTaskId: "",
+  runningScheduleId: "",
+  togglingScheduleId: "",
 };
 
 const TERMINAL = new Set(["closed", "failed", "cancelled"]);
@@ -146,16 +149,18 @@ async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const [health, config, agents, tasks] = await Promise.all([
+    const [health, config, agents, tasks, schedules] = await Promise.all([
       api("/api/health"),
       api("/api/config"),
       api("/api/agents"),
       api("/api/tasks"),
+      api("/api/schedules"),
     ]);
     state.health = health;
     state.config = config;
     state.agents = Array.isArray(agents) ? agents : [];
     state.tasks = Array.isArray(tasks) ? tasks : [];
+    state.schedules = Array.isArray(schedules) ? schedules : [];
     state.loading = false;
     state.error = "";
   } catch (error) {
@@ -250,6 +255,9 @@ function handleEvent(event) {
     case "task.log":
       if (data && data.taskId && data.entry) appendTaskLog(data.taskId, data.entry);
       break;
+    case "schedule.updated":
+      if (data && data.schedule) upsertSchedule(data.schedule);
+      break;
     case "broker.updated":
       if (data && data.health) state.health = data.health;
       break;
@@ -281,6 +289,7 @@ function applySnapshot(snapshot) {
     }));
   }
   if (Array.isArray(snapshot.tasks)) state.tasks = snapshot.tasks;
+  if (Array.isArray(snapshot.schedules)) state.schedules = snapshot.schedules;
 }
 
 function upsertAgent(agent) {
@@ -293,6 +302,12 @@ function upsertTask(task) {
   const index = state.tasks.findIndex((entry) => entry.id === task.id);
   if (index >= 0) state.tasks[index] = task;
   else state.tasks.push(task);
+}
+
+function upsertSchedule(schedule) {
+  const index = state.schedules.findIndex((entry) => entry.id === schedule.id);
+  if (index >= 0) state.schedules[index] = schedule;
+  else state.schedules.push(schedule);
 }
 
 function appendTaskLog(taskId, entry) {
@@ -360,6 +375,7 @@ function render() {
 
   const layout = el("div", { class: "layout" });
   const left = el("div", { class: "stack" });
+  left.appendChild(renderSchedules());
   left.appendChild(renderAgents());
   left.appendChild(renderTasks());
   layout.appendChild(left);
@@ -458,7 +474,156 @@ function renderStats() {
   );
   add("Tasks", health.tasks.total, `${health.tasks.closed} closed, ${health.tasks.failed} failed`);
   add("Cancelled", health.tasks.cancelled, `uptime ${fmtDuration(health.uptimeMs)}`);
+  if (health.schedules && health.schedules.total > 0) {
+    add(
+      "Schedules",
+      `${health.schedules.enabled}/${health.schedules.total} enabled`,
+      health.schedules.nextRunAt ? `next ${fmtDate(health.schedules.nextRunAt)}` : "none due",
+    );
+  }
   return stats;
+}
+
+function renderSchedules() {
+  const panel = el("section", { class: "panel" });
+  panel.appendChild(
+    el(
+      "div",
+      { class: "panel-head" },
+      el("h2", { text: "Schedules" }),
+      el("span", { class: "small muted", text: `${state.schedules.length} recurring` }),
+    ),
+  );
+  const body = el("div", { class: "panel-body" });
+  if (state.schedules.length === 0) {
+    body.appendChild(
+      el("p", {
+        class: "empty",
+        text: "No recurring schedules. Add a schedules: entry to .pi/agents.yml.",
+      }),
+    );
+    panel.appendChild(body);
+    return panel;
+  }
+  const list = el("div", { class: "schedule-list" });
+  const schedules = state.schedules
+    .slice()
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  for (const schedule of schedules) {
+    const latest = schedule.lastTaskId ? findTask(schedule.lastTaskId) : null;
+    const card = el("article", { class: "schedule-card" });
+    card.appendChild(
+      el(
+        "div",
+        { class: "schedule-top" },
+        el("div", {},
+          el("div", { class: "schedule-id", text: schedule.id }),
+          el("div", { class: "small muted", text: schedule.title || "" }),
+        ),
+        el("span", {
+          class: `pill ${schedule.enabled ? "idle" : "stopped"}`,
+          text: schedule.enabled ? "enabled" : "disabled",
+        }),
+      ),
+    );
+    const meta = el("div", { class: "schedule-meta" });
+    meta.appendChild(el("span", { text: `role ${schedule.role}` }));
+    meta.appendChild(el("span", { text: `every ${schedule.every}` }));
+    meta.appendChild(el("span", { text: `overlap ${schedule.overlap}` }));
+    meta.appendChild(
+      el("span", {
+        text: schedule.enabled ? `next ${fmtDate(schedule.nextRunAt)}` : "not scheduled",
+      }),
+    );
+    if (schedule.lastRunAt) meta.appendChild(el("span", { text: `last ${fmtDate(schedule.lastRunAt)}` }));
+    if (schedule.skippedRuns) meta.appendChild(el("span", { text: `${schedule.skippedRuns} skipped` }));
+    card.appendChild(meta);
+
+    if (latest) {
+      const row = el(
+        "button",
+        {
+          class: "schedule-task",
+          attrs: { type: "button" },
+          on: { click: () => selectTask(latest.id) },
+        },
+        el("span", { text: `Latest: ${latest.title || latest.id}` }),
+        statusPill(latest.status),
+      );
+      card.appendChild(row);
+    } else {
+      card.appendChild(el("div", { class: "small muted", text: "No task generated yet." }));
+    }
+
+    const controls = el("div", { class: "row schedule-actions" });
+    controls.appendChild(
+      el("button", {
+        class: "btn primary",
+        attrs: {
+          type: "button",
+          disabled: state.runningScheduleId === schedule.id ? "disabled" : undefined,
+        },
+        text: state.runningScheduleId === schedule.id ? "Triggering..." : "Run now",
+        on: { click: () => void runScheduleNow(schedule.id) },
+      }),
+    );
+    controls.appendChild(
+      el("button", {
+        class: "btn",
+        attrs: {
+          type: "button",
+          disabled: state.togglingScheduleId === schedule.id ? "disabled" : undefined,
+        },
+        text: schedule.enabled ? "Disable" : "Enable",
+        on: { click: () => void toggleSchedule(schedule) },
+      }),
+    );
+    card.appendChild(controls);
+    list.appendChild(card);
+  }
+  body.appendChild(list);
+  panel.appendChild(body);
+  return panel;
+}
+
+async function runScheduleNow(scheduleId) {
+  if (state.runningScheduleId) return;
+  state.runningScheduleId = scheduleId;
+  state.actionError = "";
+  render();
+  try {
+    const task = await api(`/api/schedules/${encodeURIComponent(scheduleId)}/run`, {
+      method: "POST",
+    });
+    upsertTask(task);
+    selectTask(task.id);
+    void refreshAll();
+  } catch (error) {
+    state.actionError = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.runningScheduleId = "";
+    render();
+  }
+}
+
+async function toggleSchedule(schedule) {
+  if (state.togglingScheduleId) return;
+  state.togglingScheduleId = schedule.id;
+  state.actionError = "";
+  render();
+  try {
+    const updated = await api(`/api/schedules/${encodeURIComponent(schedule.id)}/enable`, {
+      method: "POST",
+      body: { enabled: !schedule.enabled },
+    });
+    upsertSchedule(updated);
+    void refreshAll();
+  } catch (error) {
+    state.actionError = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.togglingScheduleId = "";
+    render();
+  }
 }
 
 function renderAgents() {
@@ -717,6 +882,22 @@ function renderDetail() {
     cell("Elapsed", task.startedAt ? fmtDuration(Date.now() - Date.parse(task.startedAt)) : "-"),
   );
   body.appendChild(grid);
+
+  if (task.metadata && task.metadata.scheduleId) {
+    body.appendChild(
+      el(
+        "div",
+        { class: "section" },
+        el("h4", { text: "Schedule" }),
+        el("pre", {
+          class: "block",
+          text: `id: ${task.metadata.scheduleId}\ntrigger: ${
+            task.metadata.trigger || "scheduled"
+          }\nscheduledFor: ${task.metadata.scheduledFor || "-"}`,
+        }),
+      ),
+    );
+  }
 
   body.appendChild(
     el(

@@ -7,6 +7,7 @@ import type {
   HealthView,
   OrchestratorConfig,
   ReviewDecision,
+  ScheduleView,
   SubmitTaskInput,
   Task,
   TaskFilter,
@@ -51,6 +52,7 @@ export interface BrokerSnapshot {
   health: HealthView;
   agents: AgentView[];
   tasks: TaskView[];
+  schedules?: ScheduleView[];
   config?: BrokerConfigView;
 }
 
@@ -410,6 +412,26 @@ export class BrokerClient {
     return this.request<AgentView[]>("/api/agents");
   }
 
+  async listSchedules(): Promise<ScheduleView[]> {
+    return this.request<ScheduleView[]>("/api/schedules");
+  }
+
+  async runSchedule(scheduleId: string): Promise<Task> {
+    if (!scheduleId) throw new BrokerUnavailableError("scheduleId is required");
+    return this.request<Task>(`/api/schedules/${encodeURIComponent(scheduleId)}/run`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView> {
+    if (!scheduleId) throw new BrokerUnavailableError("scheduleId is required");
+    return this.request<ScheduleView>(`/api/schedules/${encodeURIComponent(scheduleId)}/enable`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
   async listTasks(filter?: TaskFilter): Promise<TaskView[]> {
     return this.request<TaskView[]>(`/api/tasks${buildQuery(filter)}`);
   }
@@ -505,12 +527,13 @@ export class BrokerClient {
     }
   }
 
-  /** Compose health, agents, tasks, and config from the documented routes. */
+  /** Compose health, agents, tasks, schedules, and config from the documented routes. */
   async getSnapshot(): Promise<BrokerSnapshot> {
-    const [health, agents, tasks] = await Promise.all([
+    const [health, agents, tasks, schedules] = await Promise.all([
       this.health(),
       this.listAgents(),
       this.listTasks(),
+      this.listSchedules(),
     ]);
     let config: BrokerConfigView | undefined;
     try {
@@ -518,7 +541,7 @@ export class BrokerClient {
     } catch {
       config = undefined;
     }
-    const snapshot: BrokerSnapshot = { health, agents, tasks };
+    const snapshot: BrokerSnapshot = { health, agents, tasks, schedules };
     if (config) snapshot.config = config;
     return snapshot;
   }

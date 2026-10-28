@@ -6,6 +6,7 @@ import type {
   OrchestratorConfig,
   OrchestratorCore,
   ReviewDecision,
+  ScheduleView,
   SSEEvent,
   SSEListener,
   SubmitTaskInput,
@@ -50,6 +51,7 @@ export function makeRuntimeAgent(overrides: Partial<AgentRuntime> = {}): AgentRu
 export class StubCore implements OrchestratorCore {
   agents: AgentRuntime[];
   tasks: Task[] = [];
+  schedules: ScheduleView[] = [];
   listeners = new Set<SSEListener>();
   startedAt: string;
   configFingerprint = "stub-fingerprint";
@@ -127,6 +129,34 @@ export class StubCore implements OrchestratorCore {
     return task;
   }
 
+  listSchedules(): ScheduleView[] {
+    return this.schedules.map((schedule) => ({ ...schedule }));
+  }
+
+  async runSchedule(scheduleId: string): Promise<Task> {
+    const schedule = this.schedules.find((entry) => entry.id === scheduleId);
+    if (!schedule) throw new Error(`schedule "${scheduleId}" was not found`);
+    const task = await this.submit({
+      title: schedule.title,
+      role: schedule.role,
+      prompt: schedule.prompt,
+      ...(schedule.acceptance !== undefined ? { acceptance: schedule.acceptance } : {}),
+    });
+    schedule.lastRunAt = new Date().toISOString();
+    schedule.lastTaskId = task.id;
+    schedule.lastTaskStatus = task.status;
+    this.emit("schedule.updated", { schedule });
+    return task;
+  }
+
+  async setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView> {
+    const schedule = this.schedules.find((entry) => entry.id === scheduleId);
+    if (!schedule) throw new Error(`schedule "${scheduleId}" was not found`);
+    schedule.enabled = enabled;
+    this.emit("schedule.updated", { schedule });
+    return { ...schedule };
+  }
+
   listAgents(): AgentView[] {
     return this.agents.map((agent) => {
       const view: AgentView = {
@@ -175,6 +205,7 @@ export class StubCore implements OrchestratorCore {
       configFingerprint: this.configFingerprint,
       agents: this.agents,
       tasks: this.tasks,
+      schedules: this.schedules,
       seq: this.seq,
       startedAt: this.startedAt,
     };

@@ -141,6 +141,14 @@ try {
   const agents = await api("GET", "/api/agents");
   printAgents(agents, "Agent pool:");
 
+  const schedules = await api("GET", "/api/schedules");
+  console.log(`\nRecurring schedules: ${schedules.length}`);
+  for (const schedule of schedules) {
+    console.log(
+      `  ${schedule.id} role=${schedule.role} every=${schedule.every} overlap=${schedule.overlap} enabled=${schedule.enabled}`,
+    );
+  }
+
   const submissions = [
     {
       title: "Add task queue metrics",
@@ -198,6 +206,19 @@ try {
     finalAgents = await api("GET", "/api/agents");
   }
   printAgents(finalAgents, "Final agent pool:");
+
+  const schedule = schedules[0];
+  if (schedule) {
+    console.log(`\nTrigger schedule ${schedule.id} manually (fake worker)...`);
+    const scheduledTask = await api("POST", `/api/schedules/${schedule.id}/run`);
+    const due = await waitForTasks(
+      (tasks) => tasks.some((task) => task.id === scheduledTask.id && task.status === "awaiting_review"),
+      "scheduled task to await review",
+    );
+    printTasks(due.filter((task) => task.id === scheduledTask.id), "Scheduled task:");
+    await api("POST", `/api/tasks/${scheduledTask.id}/review`, { decision: "close" });
+    console.log("Closed scheduled task.");
+  }
 
   const finalTasks = await api("GET", "/api/tasks");
   printTasks(finalTasks, "Final tasks:");

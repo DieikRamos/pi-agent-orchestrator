@@ -8,6 +8,7 @@ import type {
   OrchestratorConfig,
   OrchestratorCore,
   ReviewDecision,
+  ScheduleView,
   SSEListener,
   Task,
   TaskFilter,
@@ -143,6 +144,20 @@ export class BrokerCore implements OrchestratorCore {
 
   getTask(taskId: string): TaskView | undefined {
     return this.scheduler.getTask(taskId);
+  }
+
+  listSchedules(): ScheduleView[] {
+    return this.scheduler.listSchedules();
+  }
+
+  runSchedule(scheduleId: string): Promise<Task> {
+    this.assertRunning();
+    return this.scheduler.runSchedule(scheduleId);
+  }
+
+  setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView> {
+    this.assertRunning();
+    return this.scheduler.setScheduleEnabled(scheduleId, enabled);
   }
 
   getSnapshot(): BrokerState {

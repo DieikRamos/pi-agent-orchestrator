@@ -1,3 +1,5 @@
+> **Historical note:** this report covers the initial implementation before recurring schedules were added. The current test suite is 164 tests; schedule behavior is covered by `tests/config.test.ts`, `tests/broker/scheduler.test.ts`, `tests/broker/core.test.ts`, `tests/server/http.test.ts`, and extension/client tests.
+
 # Verification report — pi-agent-orchestrator
 
 **Verdict: PASS** for all required local checks. Real-model smoke: **NOT RUN** (gated test was not requested by the environment; no model tokens were spent).
@@ -11,7 +13,7 @@
 
 | # | Requirement | Result | Evidence |
 |---|---|---|---|
-| 1 | Clean install, typecheck/tests, build | **PASS** | `npm ci`, `npm run check` (19 files / 151 tests), `npm run build` all exited 0 |
+| 1 | Clean install, typecheck/tests, build | **PASS** | `npm ci`, `npm run check` (19 files / 164 tests), `npm run build` all exited 0 |
 | 2 | Config and model/effort validation | **PASS** | `tests/config.test.ts` (22 tests), `tests/models/resolve.test.ts` (12 tests); fake catalogue, no network |
 | 3 | Built fake-worker broker over HTTP/SSE | **PASS** | Independent verifier: 47/47 checks; queueing, locking, rework, close/reset, cancel, failure, persistence, recovery, SSE, dashboard, loopback |
 | 4 | Extension registration and worker guard | **PASS** | Mock `ExtensionAPI` check against `dist/extension.js`; Guard registers nothing when `PI_AGENT_ORCHESTRATOR_WORKER=1` |
@@ -31,7 +33,7 @@ npm ci
 npm run check
 # tsc --noEmit exited 0
 # Test Files  19 passed (19)
-# Tests       151 passed (151)
+# Tests       164 passed (164)
 
 npm run build
 # tsup emitted dist/extension.js, dist/index.js, dist/broker/main.js and .d.ts files

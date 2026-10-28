@@ -31,6 +31,9 @@ describe("dashboard smoke checks", () => {
     expect(app).toContain("/cancel");
     expect(app).toContain("submitReview");
     expect(app).toContain("cancelTask");
+    expect(app).toContain("/api/schedules/");
+    expect(app).toContain("runScheduleNow");
+    expect(app).toContain("toggleSchedule");
     expect(app).toContain("startPolling");
     expect(app).not.toContain(".innerHTML");
     expect(app).toContain("textContent");
@@ -40,6 +43,7 @@ describe("dashboard smoke checks", () => {
     const css = await readWeb("styles.css");
     expect(css).toContain(".agent-card");
     expect(css).toContain(".pill.awaiting_review");
+    expect(css).toContain(".schedule-card");
     expect(css).toContain("@media (max-width: 1040px)");
     expect(css).toContain("@media (max-width: 620px)");
     expect(css).not.toMatch(/@import\s+url\(/);

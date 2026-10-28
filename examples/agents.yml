@@ -48,3 +48,32 @@ agents:
     effort: low
     replicas: 2
     cwd: .
+
+  reviewer:
+    description: >-
+      Review recent changes for regressions and newly introduced bugs. Inspect
+      the diff, related tests and call sites. Report concrete findings with file
+      references; do not change production code unless explicitly asked.
+    model: deepseek/deepseek-reasoner
+    provider: deepseek
+    effort: high
+    replicas: 1
+    tools: [read, grep, find, ls, bash]
+
+# Recurring checks are normal tasks: they queue when the role is busy and still
+# require close/rework before the replica is released.
+schedules:
+  - id: recent-bug-review
+    role: reviewer
+    title: Recent bug review
+    every: 30m
+    runOnStart: false
+    overlap: skip
+    prompt: |
+      Review the repository changes from the most recent work window (git log,
+      git diff, uncommitted changes). Look specifically for newly introduced
+      bugs, regressions, missing tests and risky edge cases. Do not rewrite
+      code; produce a short report with file:line references, severity and a
+      suggested fix for each finding.
+    acceptance: >-
+      A concise report with concrete file references and no speculative findings.
