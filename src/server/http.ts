@@ -105,8 +105,15 @@ export function normalizeLoopbackHost(host: string | undefined): "127.0.0.1" {
 
 /** Candidate dashboard directories for a module URL, most specific first. */
 export function webRootCandidates(moduleUrl: URL | string, explicit?: string): string[] {
+  // `import.meta.url` is a string. Treat URL strings as URLs instead of paths,
+  // otherwise resolving from a bundled module prepends the process cwd and the
+  // packaged `web/` directory is missed when the broker runs in a project dir.
   const base =
-    typeof moduleUrl === "string" ? pathToFileURL(path.resolve(moduleUrl)) : moduleUrl;
+    moduleUrl instanceof URL
+      ? moduleUrl
+      : /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(moduleUrl)
+        ? new URL(moduleUrl)
+        : pathToFileURL(path.resolve(moduleUrl));
   const candidates: string[] = [];
   if (explicit) candidates.push(path.resolve(explicit));
   candidates.push(
