@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Pi Agent Orchestrator</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#app">Skip to dashboard</a>
+    <div id="app" class="app">
+      <section class="panel loading" aria-live="polite">
+        <h1>Pi Agent Orchestrator</h1>
+        <p>Loading broker dashboard...</p>
+      </section>
+    </div>
+    <noscript>This dashboard requires JavaScript. The JSON API is available at /api/health.</noscript>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
