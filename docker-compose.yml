@@ -1,0 +1,37 @@
+name: pi-agent-orchestrator
+
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pi-agent-orchestrator:local
+    init: true
+    restart: unless-stopped
+    ports:
+      # Host loopback only. The container binds 0.0.0.0 inside its own network.
+      - "127.0.0.1:${PI_BROKER_PORT:-8787}:${PI_BROKER_PORT:-8787}"
+    environment:
+      HOME: /root
+      PI_BROKER_PORT: "${PI_BROKER_PORT:-8787}"
+      PI_ORCHESTRATOR_WORKDIR: /workspace
+      PI_ORCHESTRATOR_ALLOW_REMOTE_BIND: "1"
+      PI_AGENT_CONFIG: /workspace/.pi/agents.yml
+      PI_ORCHESTRATOR_STATE_DIR: /workspace/.pi/agent-orchestrator
+      PI_TELEMETRY: "0"
+      PI_SKIP_VERSION_CHECK: "1"
+    volumes:
+      # Project/config/state/workdir. Defaults to this repository.
+      - "${PI_PROJECT_DIR:-.}:/workspace"
+      # Reuse the host Pi credentials, auth.json and models.json.
+      - "${PI_AGENT_DIR:-${HOME}/.pi/agent}:/root/.pi/agent"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:'+(process.env.PI_BROKER_PORT||8787)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s

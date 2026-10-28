@@ -1,0 +1,13 @@
+.git
+.gitignore
+node_modules
+dist
+coverage
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.pi/agent-orchestrator
+.pi/orchestrator
+.pi/agent-orchestrator-demo

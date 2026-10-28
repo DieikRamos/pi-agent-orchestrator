@@ -449,6 +449,10 @@ describe("loopback binding", () => {
   it("rejects non-loopback explicit hosts", async () => {
     expect(() => normalizeLoopbackHost("0.0.0.0")).toThrow(/non-loopback/);
     expect(() => normalizeLoopbackHost("192.168.1.10")).toThrow(/non-loopback/);
+    expect(normalizeLoopbackHost("0.0.0.0", { allowNonLoopback: true })).toBe("0.0.0.0");
+    expect(() => normalizeLoopbackHost("192.168.1.10", { allowNonLoopback: true })).toThrow(
+      /non-loopback/,
+    );
     const server = createServer(new StubCore(), {
       host: "0.0.0.0",
       port: 0,

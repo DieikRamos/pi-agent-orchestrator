@@ -52,6 +52,10 @@ describe("broker CLI entrypoint", () => {
       fakeWorker: true,
       help: false,
     });
+    expect(parseArgs(["--workdir", "/tmp/project", "--host", "0.0.0.0"])).toMatchObject({
+      workdir: "/tmp/project",
+      host: "0.0.0.0",
+    });
     expect(() => parseArgs(["--port", "nope"])).toThrow(BrokerCliError);
     expect(() => parseArgs(["--bogus"])).toThrow(/Unknown option/);
   });
@@ -122,4 +126,23 @@ describe("broker CLI entrypoint", () => {
     brokers.pop();
     expect(await readDescriptor(descriptorPath)).toBeUndefined();
   }, 20_000);
+  it("resolves relative config/state paths from --workdir", async () => {
+    const dir = await tempProject();
+    dirs.push(dir);
+    const running = await runBroker({
+      configPath: "agents.yml",
+      stateDir: "state",
+      workdir: dir,
+      port: 0,
+      daemon: false,
+      fakeWorker: true,
+      help: false,
+    });
+    expect(running).toBeDefined();
+    brokers.push(running!);
+    const descriptor = await readDescriptor(path.join(dir, "state", "broker.json"));
+    expect(descriptor?.configPath).toBe(path.join(dir, "agents.yml"));
+    expect(descriptor?.port).toBeGreaterThan(0);
+  }, 20_000);
+
 });

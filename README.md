@@ -50,6 +50,80 @@ pi -e ./
 
 The package exposes the extension at `dist/extension.js` via the `pi.extensions` manifest entry. Node.js 20 or newer is required. `@earendil-works/pi-*` packages are peer dependencies provided by Pi.
 
+## Docker Compose quickstart
+
+The image runs the broker and all Pi workers in one container. The project
+directory is mounted at `/workspace`, so agents edit your real files while the
+broker writes its descriptor and state under `/workspace/.pi/agent-orchestrator`.
+The container binds `0.0.0.0` only inside the container network; Compose
+publishes the port on host `127.0.0.1`.
+
+```bash
+# In this repository (or point PI_PROJECT_DIR at another project)
+cp examples/agents.yml .pi/agents.yml   # edit models/roles first
+docker compose up --build -d
+docker compose logs -f broker
+
+curl -s http://127.0.0.1:8787/api/health
+open http://127.0.0.1:8787
+```
+
+Use it from Pi sessions in that same project:
+
+```bash
+cd /path/to/project
+export PI_ORCHESTRATOR_NO_AUTOSTART=1   # broker is managed by compose
+pi -e /path/to/pi-agent-orchestrator     # or install the package once
+```
+
+`PI_ORCHESTRATOR_NO_AUTOSTART=1` prevents the extension from spawning a second
+broker on the host. Without it, autostart reuses the healthy broker descriptor
+when it is already present, so it is safe but less explicit.
+
+Use a different project/workdir:
+
+```bash
+PI_PROJECT_DIR=/absolute/path/to/project \
+  docker compose -f /path/to/pi-agent-orchestrator/docker-compose.yml up --build -d
+```
+
+Credentials and models are read from the host Pi agent directory, mounted at
+`/root/.pi/agent`. Override it with `PI_AGENT_DIR`; the default is `${HOME}/.pi/agent`.
+If you use environment-based API keys instead, add them to the compose
+`environment`/`env_file` section. Stop the stack with:
+
+```bash
+docker compose down
+```
+
+The container runs as root by default, so files it creates in a bind-mounted
+Linux project (state, session logs) may be root-owned. Run Compose with a
+matching user if that matters, and keep the Pi agent directory readable by it.
+Git inside the image is configured with a container-local `safe.directory`
+allowance so it can operate on the bind-mounted project.
+
+The container exposes these knobs:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PI_PROJECT_DIR` | `.` | Host project mounted at `/workspace` |
+| `PI_BROKER_PORT` | `8787` | Host loopback and container port |
+| `PI_AGENT_DIR` | `${HOME}/.pi/agent` | Host Pi credentials/models/config |
+| `PI_ORCHESTRATOR_WORKDIR` | `/workspace` | Broker workdir inside container |
+| `PI_AGENT_CONFIG` | `/workspace/.pi/agents.yml` | Worker roster |
+| `PI_ORCHESTRATOR_STATE_DIR` | `/workspace/.pi/agent-orchestrator` | Durable state |
+
+For a non-Docker run, the same workdir can be passed directly:
+
+```bash
+node dist/broker/main.js --workdir /absolute/project \
+  --config /absolute/project/.pi/agents.yml \
+  --state-dir /absolute/project/.pi/agent-orchestrator
+```
+
+`PI_ORCHESTRATOR_WORKDIR` is the environment-variable equivalent. Agent
+`cwd` values remain relative to this workdir.
+
 ## Configuration
 
 Copy [`examples/agents.yml`](examples/agents.yml) to `.pi/agents.yml` in your project and adjust model ids to your Pi model catalogue.
@@ -240,11 +314,19 @@ Broker CLI options:
 
 ```bash
 node dist/broker/main.js \
+  --workdir /absolute/project \
   --config .pi/agents.yml \
   --state-dir .pi/agent-orchestrator \
+  --host 127.0.0.1 \
   --port 8787 \
   [--daemon] [--fake-worker] [--help]
 ```
+
+`--workdir` (or `PI_ORCHESTRATOR_WORKDIR`) is the project root for relative
+config/state paths and for each agent's `cwd`. `--host` is loopback-only by
+default; Docker Compose passes `--host 0.0.0.0` plus the explicit
+`PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1` guard and publishes the port only on host
+loopback. Do not use that guard without a loopback-only port mapping.
 
 `--port` overrides the config. `--daemon` is detached-friendly (no terminal assumptions, ignores SIGHUP). `--fake-worker` uses deterministic in-memory workers. The broker writes `broker.json` atomically and refuses to start when an existing descriptor points at a healthy broker for the same project; stale descriptors are removed.
 
@@ -288,7 +370,9 @@ Tests cover config validation, recurring schedules, scheduler locking/review/rew
 
 **Broker port already in use.** Change `server.port`, pass `--port 0` for an ephemeral port, or stop the other broker with `/agents stop`. If `broker.json` points at a dead or unhealthy process, the broker removes it on the next start; you can also delete `.pi/agent-orchestrator/broker.json`.
 
-**Tools say the broker is unavailable.** Run `/agents start` (or `node dist/broker/main.js --config .pi/agents.yml`) and check `.pi/agent-orchestrator/broker.log`. The extension autostarts the broker only when `.pi/agents.yml` exists and the built broker entry is present (`npm run build`).
+**Tools say the broker is unavailable.** Run `/agents start` (or `node dist/broker/main.js --workdir <project> --config .pi/agents.yml`) and check `.pi/agent-orchestrator/broker.log`. The extension autostarts the broker only when `.pi/agents.yml` exists and the built broker entry is present (`npm run build`). With Docker Compose, start the stack and set `PI_ORCHESTRATOR_NO_AUTOSTART=1` in the Pi session so the extension never tries to spawn a host broker.
+
+**Docker: broker is healthy but Pi tools cannot connect.** Confirm the host project is the same directory mounted by Compose (`PI_PROJECT_DIR`) and that `.pi/agent-orchestrator/broker.json` exists there. The descriptor is written through the bind mount. Check the published loopback port with `curl http://127.0.0.1:${PI_BROKER_PORT:-8787}/api/health`; do not expose that port on `0.0.0.0`.
 
 **Worker env guard.** Worker processes set `PI_AGENT_ORCHESTRATOR_WORKER=1`; the extension exits immediately in that mode so workers never register orchestrator tools or start nested brokers. If you see recursive broker spawning, check that this variable is present in the spawned Pi process — the RPC adapter sets it automatically.
 
@@ -302,7 +386,7 @@ Tests cover config validation, recurring schedules, scheduler locking/review/rew
 
 ## Limitations and non-goals
 
-- Loopback only; no remote/multi-host orchestration, cloud hosting, or public exposure.
+- Loopback only; no remote/multi-host orchestration, cloud hosting, or public exposure. Docker Compose uses an explicit container bind plus a host-loopback port mapping, not a remote broker.
 - The roster is fixed by YAML; no arbitrary agent creation at runtime. Reload or restart after editing the file.
 - No rich authentication/RBAC.
 - Not a replacement for Pi's built-in orchestrator/subagent systems or a general workflow engine.

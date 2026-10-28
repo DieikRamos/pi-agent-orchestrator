@@ -37,8 +37,14 @@ const STATIC_ASSETS: Readonly<Record<string, { file: string; type: string }>> = 
 };
 
 export interface BrokerServerOptions {
-  /** Loopback host. `localhost`/`::1` are normalized to 127.0.0.1. */
+  /** Bind host. `localhost`/`::1` are normalized to 127.0.0.1. */
   host?: string;
+  /**
+   * Explicit opt-in to bind a non-loopback interface. Docker Compose uses this
+   * behind a host-side `127.0.0.1` port mapping. Defaults to the
+   * `PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1` env guard.
+   */
+  allowNonLoopbackHost?: boolean;
   /** Port to bind. `0` (the default) asks the OS for an ephemeral port. */
   port?: number;
   /** Serve the dashboard. Defaults to the loaded config's `server.dashboard`. */
@@ -91,15 +97,29 @@ export interface BrokerHttpServer {
   address(): AddressInfo | null;
 }
 
-/** Normalize accepted loopback spellings and reject everything else. */
-export function normalizeLoopbackHost(host: string | undefined): "127.0.0.1" {
+/**
+ * Normalize accepted loopback spellings and reject everything else unless the
+ * caller explicitly opts in (Docker port mapping). The opt-in is deliberately
+ * narrow: the compose file publishes the port only on host loopback.
+ */
+export function normalizeLoopbackHost(
+  host: string | undefined,
+  options: { allowNonLoopback?: boolean } = {},
+): string {
   if (host === undefined || host.trim() === "") return LOOPBACK_HOST;
   const value = host.trim().toLowerCase();
   if (value === "127.0.0.1" || value === "localhost" || value === "::1") {
     return LOOPBACK_HOST;
   }
+  const allow =
+    options.allowNonLoopback === true ||
+    process.env.PI_ORCHESTRATOR_ALLOW_REMOTE_BIND === "1";
+  if (allow && /^(0\.0\.0\.0|\[::\]|::)$/.test(value)) {
+    return value === "0.0.0.0" ? "0.0.0.0" : value;
+  }
   throw new Error(
-    `refusing to bind the broker HTTP server to non-loopback host "${host}" (v1 is loopback-only)`,
+    `refusing to bind the broker HTTP server to non-loopback host "${host}" ` +
+      "(set PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1 only for a container with a loopback-only port mapping)",
   );
 }
 
@@ -184,7 +204,11 @@ class BrokerServer implements BrokerHttpServer {
 
   get url(): string | undefined {
     if (this.boundPort === undefined) return undefined;
-    return `http://${this.boundHost ?? LOOPBACK_HOST}:${this.boundPort}`;
+    const host =
+      this.boundHost === "0.0.0.0" || this.boundHost === "::" || this.boundHost === "[::]"
+        ? LOOPBACK_HOST
+        : (this.boundHost ?? LOOPBACK_HOST);
+    return `http://${host}:${this.boundPort}`;
   }
 
   address(): AddressInfo | null {
@@ -206,7 +230,9 @@ class BrokerServer implements BrokerHttpServer {
 
   private async doListen(): Promise<BrokerServerAddress> {
     const config = await this.getConfig();
-    const host = normalizeLoopbackHost(this.options.host ?? config.server.host);
+    const host = normalizeLoopbackHost(this.options.host ?? config.server.host, {
+      allowNonLoopback: this.options.allowNonLoopbackHost,
+    });
     const port = this.options.port ?? config.server.port;
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error(`invalid broker port: ${String(port)}`);

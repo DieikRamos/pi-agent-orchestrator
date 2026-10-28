@@ -7,12 +7,20 @@ broker core, HTTP API, worker adapters and the Pi extension build against it.
 
 | Purpose | Default |
 |---|---|
-| Project config | `.pi/agents.yml` (or an explicit path) |
-| Durable broker state | `.pi/agent-orchestrator/` |
+| Workdir / project root | `--workdir`, `PI_ORCHESTRATOR_WORKDIR`, or process cwd |
+| Project config | `<workdir>/.pi/agents.yml` (or an explicit path) |
+| Durable broker state | `<workdir>/.pi/agent-orchestrator/` |
 | Broker URL | `http://127.0.0.1:<port>` (`port: 0` picks a free port) |
 | Dashboard | `<broker URL>/` when `server.dashboard: true` |
 
 Bind to loopback only. Remote/multi-host operation is out of scope for v1.
+Docker Compose is the one supported exception at the transport layer: the
+container binds `0.0.0.0` with `PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1`, but the
+port is published only on host `127.0.0.1`. The config file keeps
+`server.host` loopback-only; Docker uses the broker CLI `--host` override.
+
+`--workdir` (or `PI_ORCHESTRATOR_WORKDIR`) is the project root used for relative
+config/state paths and for resolving each agent's `cwd`.
 
 ## YAML config
 
@@ -171,6 +179,7 @@ All routes are under the broker origin. JSON in, JSON out. SSE at
 | `POST` | `/api/tasks/:id/cancel` | Cancel a non-terminal task |
 | `POST` | `/api/reload` | Re-read config, validate, apply fingerprint/roster rules |
 | `POST` | `/api/shutdown` | Graceful broker shutdown |
+| Broker CLI | `--workdir`, `--config`, `--state-dir`, `--host`, `--port`, `--daemon`, `--fake-worker` |
 | `GET` | `/` and dashboard assets | Framework-free HTML dashboard when enabled |
 
 Submit response is the created `Task` (usually `status: "queued"`).

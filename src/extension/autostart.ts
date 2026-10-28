@@ -18,6 +18,9 @@ export const WORKER_ENV = "PI_AGENT_ORCHESTRATOR_WORKER";
 /** Optional override for the built broker entry point (development / tests). */
 export const BROKER_ENTRY_ENV = "PI_AGENT_ORCHESTRATOR_BROKER_ENTRY";
 
+/** Set when the broker is managed externally (Docker Compose) and must not be spawned. */
+export const NO_AUTOSTART_ENV = "PI_ORCHESTRATOR_NO_AUTOSTART";
+
 export interface BrokerChild {
   pid?: number;
   once?(event: "error" | "exit", listener: (...args: unknown[]) => void): unknown;
@@ -182,6 +185,12 @@ function isWorkerProcess(env: NodeJS.ProcessEnv): boolean {
   return env[WORKER_ENV] === "1";
 }
 
+function isAutostartDisabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env[NO_AUTOSTART_ENV];
+  if (value === undefined) return false;
+  return ["1", "true", "yes"].includes(value.trim().toLowerCase());
+}
+
 /**
  * Ensure exactly one broker is running for a project.
  *
@@ -206,6 +215,20 @@ export function ensureBroker(options: EnsureBrokerOptions): Promise<EnsureBroker
       configPath,
       reason:
         "PI_AGENT_ORCHESTRATOR_WORKER=1: worker processes never start another broker",
+    });
+  }
+
+  if (isAutostartDisabled(env)) {
+    return Promise.resolve({
+      skipped: true,
+      started: false,
+      reused: false,
+      descriptorPath,
+      logPath: brokerLogPath(cwd),
+      configPath,
+      reason:
+        `${NO_AUTOSTART_ENV}=1: broker is managed externally (for example Docker Compose); ` +
+        "run `docker compose up -d` or /agents start after enabling autostart",
     });
   }
 
@@ -272,7 +295,7 @@ async function ensureBrokerInternal(
   try {
     child = spawnBroker(
       process.execPath,
-      [brokerEntry, "--config", configPath, "--daemon"],
+      [brokerEntry, "--workdir", cwd, "--config", configPath, "--daemon"],
       {
         cwd,
         detached: true,

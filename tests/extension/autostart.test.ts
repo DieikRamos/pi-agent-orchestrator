@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   BrokerStartError,
+  NO_AUTOSTART_ENV,
   WORKER_ENV,
   ensureBroker,
   resetEnsureBrokerState,
@@ -57,6 +58,23 @@ describe("ensureBroker", () => {
     expect(result.reason).toContain(WORKER_ENV);
   });
 
+  it("skips autostart when the broker is managed externally", async () => {
+    const cwd = await project();
+    let spawned = 0;
+    const result = await ensureBroker({
+      cwd,
+      env: { [NO_AUTOSTART_ENV]: "1" },
+      spawn: () => {
+        spawned += 1;
+        return {};
+      },
+      fileExists: exists,
+    });
+    expect(result.skipped).toBe(true);
+    expect(spawned).toBe(0);
+    expect(result.reason).toContain(NO_AUTOSTART_ENV);
+  });
+
   it("reuses a healthy running broker", async () => {
     const cwd = await project();
     const live = descriptor(cwd);
@@ -106,6 +124,8 @@ describe("ensureBroker", () => {
     expect(spawned).toBe(1);
     expect(spawnArgs).toContain("--daemon");
     expect(spawnArgs).toContain("--config");
+    expect(spawnArgs).toContain("--workdir");
+    expect(spawnArgs[spawnArgs.indexOf("--workdir") + 1]).toBe(cwd);
     expect(spawnOptions).toMatchObject({ detached: true, stdio: "ignore", cwd });
   });
 

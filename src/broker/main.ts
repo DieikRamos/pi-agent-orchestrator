@@ -23,6 +23,10 @@ const BROKER_VERSION = "0.1.0";
 export interface BrokerCliOptions {
   configPath: string;
   stateDir: string;
+  /** Project/workspace root used for config/state/worker cwd resolution. */
+  workdir?: string;
+  /** Bind host override. Non-loopback requires PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1. */
+  host?: string;
   /** CLI override; undefined means use the config's `server.port`. */
   port?: number;
   daemon: boolean;
@@ -42,12 +46,17 @@ export const USAGE = `Usage: pi-agent-orchestrator [options]
 Run the local agent orchestrator broker (loopback only).
 
 Options:
-  --config <path>      Agent config file (default: ${DEFAULT_CONFIG_PATH})
-  --state-dir <path>   Durable state directory (default: ${STATE_DIR})
+  --workdir <path>     Project/workspace root (default: PI_ORCHESTRATOR_WORKDIR or cwd)
+  --config <path>      Agent config file (default: <workdir>/${DEFAULT_CONFIG_PATH})
+  --state-dir <path>   Durable state directory (default: <workdir>/${STATE_DIR})
+  --host <host>        Bind host (default: config server.host, loopback only)
   --port <number>      HTTP port; 0 picks a free port (default: config server.port)
   --daemon             Run detached-friendly without terminal assumptions
   --fake-worker        Use deterministic in-memory workers (no model calls)
   -h, --help           Show this help
+
+Docker: pass --host 0.0.0.0 with PI_ORCHESTRATOR_ALLOW_REMOTE_BIND=1 and publish
+the port only on host loopback (see docker-compose.yml).
 `;
 
 export class BrokerCliError extends Error {
@@ -88,8 +97,14 @@ export function parseArgs(argv: string[]): BrokerCliOptions {
     };
 
     switch (flag) {
+      case "--workdir":
+        options.workdir = takeValue();
+        break;
       case "--config":
         options.configPath = takeValue();
+        break;
+      case "--host":
+        options.host = takeValue();
         break;
       case "--state-dir":
         options.stateDir = takeValue();
@@ -220,6 +235,7 @@ function stamp(): string {
 }
 
 export interface RunBrokerOptions extends BrokerCliOptions {
+  /** Alias for workdir, retained for the existing test/API surface. */
   cwd?: string;
 }
 
@@ -240,7 +256,12 @@ export interface RunningBroker {
 export async function runBroker(options: RunBrokerOptions): Promise<RunningBroker | undefined> {
   if (options.fakeWorker) process.env.PI_ORCHESTRATOR_FAKE_WORKER = "1";
 
-  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const cwd = path.resolve(
+    options.workdir ??
+      process.env.PI_ORCHESTRATOR_WORKDIR ??
+      options.cwd ??
+      process.cwd(),
+  );
   const paths = resolveBrokerPaths({
     configPath: options.configPath,
     stateDir: options.stateDir,
@@ -353,7 +374,8 @@ export async function runBroker(options: RunBrokerOptions): Promise<RunningBroke
   const server = createServer(core, {
     config: loaded.config,
     port,
-    host: loaded.config.server.host,
+    host: options.host ?? loaded.config.server.host,
+    allowNonLoopbackHost: process.env.PI_ORCHESTRATOR_ALLOW_REMOTE_BIND === "1",
     dashboard: loaded.config.server.dashboard,
     logger: log,
     onShutdown: () => {
