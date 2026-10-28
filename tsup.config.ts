@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/extension.ts", "src/broker/main.ts"],
+  entry: ["src/extension.ts", "src/index.ts", "src/broker/main.ts"],
   format: ["esm"],
   dts: true,
   sourcemap: true,

@@ -1,0 +1,50 @@
+# pi-agent-orchestrator sample roster.
+#
+# Copy this file to .pi/agents.yml in your project, adjust the model ids for
+# your Pi provider catalogue, then run `pi` (the extension autostarts the
+# broker) or `npx pi-agent-orchestrator --config .pi/agents.yml`.
+version: 1
+
+server:
+  host: 127.0.0.1
+  port: 8787        # 0 = pick a free port
+  dashboard: true
+
+defaults:
+  effort: medium
+  replicas: 1
+  tools: [read, grep, find, ls, edit, write, bash]
+
+agents:
+  architect:
+    description: >-
+      Break requirements into a concrete implementation plan. Identify reuse
+      opportunities, interfaces, risks and acceptance checks. Do not write
+      production code.
+    model: deepseek/deepseek-reasoner
+    provider: deepseek
+    effort: high
+    replicas: 1
+    tools: [read, grep, find, ls]
+
+  backend:
+    description: >-
+      Implement backend work in the current repository following existing
+      conventions. Add focused tests, run the relevant checks, and report the
+      exact commands and results.
+    model: deepseek/deepseek-chat
+    provider: deepseek
+    effort: medium
+    replicas: 2
+    cwd: .
+
+  frontend:
+    description: >-
+      Implement frontend work in the current repository. Match the existing
+      component, styling and accessibility conventions. Verify the affected
+      screens and report what you checked.
+    model: deepseek/deepseek-chat
+    provider: deepseek
+    effort: low
+    replicas: 2
+    cwd: .

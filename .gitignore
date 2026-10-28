@@ -5,3 +5,6 @@ coverage/
 *.log
 .DS_Store
 .pi/orchestrator/
+
+# Demo scratch state
+.pi/agent-orchestrator-demo/

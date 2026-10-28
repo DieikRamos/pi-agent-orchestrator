@@ -23,14 +23,17 @@
   "types": "./dist/extension.d.ts",
   "files": [
     "dist",
+    "web",
     "docs",
     "examples",
+    "scripts",
     "README.md"
   ],
   "scripts": {
-    "build": "tsup src/extension.ts src/broker/main.ts --format esm --dts --sourcemap --clean",
+    "build": "tsup src/extension.ts src/index.ts src/broker/main.ts --format esm --dts --sourcemap --clean",
     "check": "tsc --noEmit && vitest run",
     "test": "vitest run",
+    "demo": "node scripts/demo.mjs",
     "broker": "node dist/broker/main.js"
   },
   "dependencies": {
@@ -47,5 +50,8 @@
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
+  },
+  "bin": {
+    "pi-agent-orchestrator": "./dist/broker/main.js"
   }
 }
