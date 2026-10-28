@@ -1,0 +1,51 @@
+{
+  "name": "pi-agent-orchestrator",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Local broker and Pi extension for a fixed pool of long-lived agent workers",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "orchestrator",
+    "agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "main": "./dist/extension.js",
+  "types": "./dist/extension.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "examples",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/extension.ts src/broker/main.ts --format esm --dts --sourcemap --clean",
+    "check": "tsc --noEmit && vitest run",
+    "test": "vitest run",
+    "broker": "node dist/broker/main.js"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.pi/agent-orchestrator/
+coverage/
+*.log
+.DS_Store
+.pi/orchestrator/

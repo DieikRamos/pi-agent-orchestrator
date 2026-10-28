@@ -1,0 +1,38 @@
+version: 1
+server:
+  host: 127.0.0.1
+  port: 8787
+  dashboard: true
+
+defaults:
+  effort: medium
+  replicas: 1
+  tools: [read, grep, find, ls, edit, write, bash]
+
+agents:
+  architect:
+    description: >-
+      Break requirements into a concrete implementation plan. Identify reuse
+      opportunities, interfaces and risks. Do not write production code.
+    model: anthropic/claude-sonnet-4-5
+    provider: anthropic
+    effort: high
+    replicas: 1
+
+  developer:
+    description: >-
+      Implement assigned work in the current repository following existing
+      conventions. Run the relevant checks and report exact commands/results.
+    model: anthropic/claude-sonnet-4-5
+    effort: medium
+    replicas: 2
+    cwd: .
+
+  reviewer:
+    description: >-
+      Independently audit implementation against the stated acceptance criteria.
+      Report PASS or concrete blocking issues. Do not modify code.
+    model: anthropic/claude-sonnet-4-5
+    effort: high
+    replicas: 1
+    tools: [read, grep, find, ls, bash]
